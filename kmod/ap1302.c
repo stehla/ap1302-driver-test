@@ -2399,7 +2399,7 @@ static int ap1302_get_selection(struct v4l2_subdev *sd,
 static int ap1302_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct ap1302_device *ap1302 = to_ap1302(sd);
-	int ret;
+	int ret = 0; // there was compile error...
 
 	mutex_lock(&ap1302->lock);
 
@@ -2860,7 +2860,7 @@ static ssize_t ap1302_store_stall_standby(struct device *dev,
 
 	return size;
 }
-
+/* sysfs_emit doesn't seem to be available in the kernel version I have...
 static ssize_t ap1302_show_stall_standby(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
@@ -2871,7 +2871,7 @@ static ssize_t ap1302_show_stall_standby(struct device *dev,
 }
 
 static DEVICE_ATTR(stall_standby, 0644, ap1302_show_stall_standby, ap1302_store_stall_standby);
-
+*/
 static ssize_t ap1302_show_lane_status(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
@@ -2993,9 +2993,7 @@ static int ap1302_request_firmware(struct ap1302_device *ap1302)
 		"_dual",
 	};
 
-	const struct ap1302_firmware_header *fw_hdr;
 	unsigned int num_sensors;
-	unsigned int fw_size;
 	unsigned int i;
 	char name[64];
 	int ret;
@@ -3026,32 +3024,6 @@ static int ap1302_request_firmware(struct ap1302_device *ap1302)
 	if (ret) {
 		dev_err(ap1302->dev, "Failed to request firmware: %d\n", ret);
 		return ret;
-	}
-
-	/*
-	 * The firmware binary contains a header defined by the
-	 * ap1302_firmware_header structure. The firmware itself (also referred
-	 * to as bootdata) follows the header. Perform sanity checks to ensure
-	 * the firmware is valid.
-	 */
-	fw_hdr = (const struct ap1302_firmware_header *)ap1302->fw->data;
-
-	if (fw_hdr->magic != FW_MAGIC)
-	{
-		dev_err(ap1302->dev,
-			"Invalid firmware magic: %08x != %08x\n",fw_hdr->magic,FW_MAGIC);
-		return -EINVAL;
-	}
-
-	dev_info(ap1302->dev,"Firmware header version : %d\n",fw_hdr->version);
-	dev_info(ap1302->dev,"Firmware description : %s\n",fw_hdr->desc);
-
-	fw_size = ap1302->fw->size - sizeof(*fw_hdr);
-
-	if (fw_hdr->pll_init_size > fw_size) {
-		dev_err(ap1302->dev,
-			"Invalid firmware: PLL init size too large\n");
-		return -EINVAL;
 	}
 
 	return 0;
@@ -3109,8 +3081,14 @@ static int ap1302_load_firmware(struct ap1302_device *ap1302)
 	int ret;
 
 	fw_hdr = (const struct ap1302_firmware_header *)ap1302->fw->data;
-	fw_data = (u8 *)&fw_hdr[1];
-	fw_size = ap1302->fw->size - sizeof(*fw_hdr);
+	/* Can we get rid of header? Or make it optional as below? */
+	if (fw_hdr->magic != FW_MAGIC) {
+		fw_data = (u8 *)fw_hdr;
+		fw_size = ap1302->fw->size;
+	} else {
+		fw_data = (u8 *)&fw_hdr[1];
+		fw_size = ap1302->fw->size - sizeof(*fw_hdr);
+	}
 
 	// Fixed Point Calculation
 #define HZ_TO_S15_16_MHZ(hz) \
@@ -3118,7 +3096,7 @@ static int ap1302_load_firmware(struct ap1302_device *ap1302)
 
 	clock_freq = clk_get_rate(ap1302->clock);
 	clock_fp_mhz = HZ_TO_S15_16_MHZ(clock_freq);
-	dev_info(ap1302->dev,"AP1302 oscillator clock %ld hz (FP 0x%08x)\n",clock_freq,clock_fp_mhz);
+	dev_info(ap1302->dev,"AP1302 oscillator clock %ld hz (FP 0x%08lx)\n",clock_freq,clock_fp_mhz); // compile error
 
 	ret = ap1302_write(ap1302, AP1302_SYSTEM_FREQ_IN,
 			clock_fp_mhz, NULL);
@@ -3126,9 +3104,9 @@ static int ap1302_load_firmware(struct ap1302_device *ap1302)
 		return ret;
 
 	// Using the first link frequency
-	clock_freq = (u32)*ap1302->bus_cfg.link_frequencies;
+	clock_freq = 896000000; // I don't know how to set bus_cfg... //(u32)*ap1302->bus_cfg.link_frequencies;
 	clock_fp_mhz = HZ_TO_S15_16_MHZ(clock_freq);
-	dev_info(ap1302->dev,"AP1302 MIPI frequency %ld hz (FP 0x%08x)\n",clock_freq,clock_fp_mhz);
+	dev_info(ap1302->dev,"AP1302 MIPI frequency %ld hz (FP 0x%08lx)\n",clock_freq,clock_fp_mhz);// compile error
 
 	ret = ap1302_write(ap1302, AP1302_HINF_MIPI_FREQ_TGT,
 			clock_fp_mhz, NULL);
@@ -3183,7 +3161,9 @@ static int ap1302_load_firmware(struct ap1302_device *ap1302)
 		return ret;
 
 	/* Adjust MIPI TCLK timings */
-	return ap1302_set_mipi_t3_clk(ap1302);
+	//return ap1302_set_mipi_t3_clk(ap1302); // This is a hack specific to Xilinx platform. Not sure why they did this - there was a cleaner solution using continuous MIPI clock (AP1302_PREVIEW_HINF_CTRL_MIPI_CONT_CLK) - maybe continuous clock enable is something that should be added to driver controls.
+
+	return ap1302_dump_console(ap1302); // Added to prove to myself that AP1302 was initialized properly, since I can't see the image.
 }
 
 static int ap1302_detect_chip(struct ap1302_device *ap1302)
@@ -3407,12 +3387,12 @@ static int ap1302_parse_of(struct ap1302_device *ap1302)
 		dev_err(ap1302->dev, "Failed to parse bus configuration\n");
 		return ret;
 	}
-
+#if 0 // Don't know how to set this...
 	if (!ap1302->bus_cfg.nr_of_link_frequencies) {
 		dev_err(ap1302->dev, "no link frequencies defined");
 		return -EINVAL;
 	}
-
+#endif
 	/* Sensors */
 	sensors = of_get_child_by_name(ap1302->dev->of_node, "sensors");
 	if (!sensors) {
@@ -3483,7 +3463,7 @@ static void ap1302_cleanup(struct ap1302_device *ap1302)
 
 	v4l2_fwnode_endpoint_free(&ap1302->bus_cfg);
 
-	device_remove_file(ap1302->dev, &dev_attr_stall_standby);
+	//device_remove_file(ap1302->dev, &dev_attr_stall_standby);
 	device_remove_file(ap1302->dev, &dev_attr_lane_status);
 
 	mutex_destroy(&ap1302->lock);
@@ -3541,7 +3521,7 @@ static int ap1302_probe(struct i2c_client *client, const struct i2c_device_id *i
 	if (ret)
 		goto error;
 
-	ret = device_create_file(ap1302->dev, &dev_attr_stall_standby);
+	//ret = device_create_file(ap1302->dev, &dev_attr_stall_standby);
 	ret |= device_create_file(ap1302->dev, &dev_attr_lane_status);
 	if (ret) {
 		dev_err(ap1302->dev, "could not register sysfs entry\n");
